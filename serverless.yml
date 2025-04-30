@@ -1,0 +1,134 @@
+service: aws-serverless-poc
+
+frameworkVersion: "3"
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-offline
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  region: eu-central-1
+  environment:
+    TASKS_TABLE: ${self:service}-tasks-${sls:stage}
+    TASKS_QUEUE: ${self:service}-tasks-queue-${sls:stage}
+    TASK_PROCESSING_STATE_MACHINE: !Ref TaskProcessingStateMachine
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+        - dynamodb:UpdateItem
+        - dynamodb:Query
+        - dynamodb:Scan
+      Resource: !GetAtt TasksTable.Arn
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+        - sqs:GetQueueAttributes
+      Resource: !GetAtt TasksQueue.Arn
+    - Effect: Allow
+      Action:
+        - states:StartExecution
+      Resource: !Ref TaskProcessingStateMachine
+
+functions:
+  createTask:
+    handler: functions/createTask.handler
+    events:
+      - http:
+          path: tasks
+          method: post
+
+  getTask:
+    handler: functions/getTask.handler
+    events:
+      - http:
+          path: tasks/{id}
+          method: get
+
+  processTask:
+    handler: functions/processTask.handler
+    events:
+      - sqs:
+          arn: !GetAtt TasksQueue.Arn
+          batchSize: 1
+
+resources:
+  Resources:
+    TasksTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TASKS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+
+    TasksQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:provider.environment.TASKS_QUEUE}
+
+    TaskProcessingStateMachine:
+      Type: AWS::StepFunctions::StateMachine
+      Properties:
+        RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+        DefinitionString: !Sub |
+          {
+            "Comment": "Task processing workflow",
+            "StartAt": "ProcessTask",
+            "States": {
+              "ProcessTask": {
+                "Type": "Task",
+                "Resource": "${ProcessTaskFunction.Arn}",
+                "Next": "CheckTaskStatus"
+              },
+              "CheckTaskStatus": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.status",
+                    "StringEquals": "completed",
+                    "Next": "TaskCompleted"
+                  }
+                ],
+                "Default": "TaskFailed"
+              },
+              "TaskCompleted": {
+                "Type": "Task",
+                "Resource": "${UpdateTaskFunction.Arn}",
+                "End": true
+              },
+              "TaskFailed": {
+                "Type": "Fail",
+                "Cause": "Task processing failed"
+              }
+            }
+          }
+
+    StepFunctionsExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: states.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: StepFunctionsLambdaInvocation
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource: "*"
