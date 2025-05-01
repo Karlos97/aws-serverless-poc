@@ -3,7 +3,6 @@ import * as AWS from "aws-sdk";
 import { v4 as uuidv4 } from "uuid";
 
 const dynamodb = new AWS.DynamoDB.DocumentClient();
-const sqs = new AWS.SQS();
 
 interface Task {
   id: string;
@@ -33,14 +32,6 @@ export const handler = async (
       .put({
         TableName: process.env.TASKS_TABLE!,
         Item: task,
-      })
-      .promise();
-
-    // Send message to SQS
-    await sqs
-      .sendMessage({
-        QueueUrl: process.env.TASKS_QUEUE!,
-        MessageBody: JSON.stringify({ taskId }),
       })
       .promise();
 
