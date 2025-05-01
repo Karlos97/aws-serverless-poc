@@ -3,28 +3,40 @@ import * as AWS from "aws-sdk";
 
 const dynamodb = new AWS.DynamoDB.DocumentClient();
 
-interface TaskUpdate {
-  taskId: string;
-  status: string;
-}
-
-export const handler = async (event: any): Promise<any> => {
+export const handler = async (
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> => {
   try {
-    const taskUpdate = event as TaskUpdate;
+    const taskId = event.pathParameters?.id;
+    const requestBody = JSON.parse(event.body || "{}");
+
+    if (!taskId) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ message: "Missing task ID" }),
+      };
+    }
+
+    if (!requestBody.status) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ message: "Status is required" }),
+      };
+    }
 
     // Update task status in DynamoDB
-    await dynamodb
+    const result = await dynamodb
       .update({
         TableName: process.env.TASKS_TABLE!,
         Key: {
-          id: taskUpdate.taskId,
+          id: taskId,
         },
         UpdateExpression: "set #status = :status, updatedAt = :updatedAt",
         ExpressionAttributeNames: {
           "#status": "status",
         },
         ExpressionAttributeValues: {
-          ":status": taskUpdate.status,
+          ":status": requestBody.status,
           ":updatedAt": new Date().toISOString(),
         },
         ReturnValues: "ALL_NEW",
@@ -32,12 +44,13 @@ export const handler = async (event: any): Promise<any> => {
       .promise();
 
     return {
-      taskId: taskUpdate.taskId,
-      status: taskUpdate.status,
-      success: true,
+      statusCode: 200,
+      body: JSON.stringify(result.Attributes),
     };
   } catch (error) {
-    console.error("Error updating task:", error);
-    throw error;
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: (error as Error).message }),
+    };
   }
 };
